@@ -1,54 +1,106 @@
 pipeline {
-    agent any
 
     environment {
-        TARGET = "ec2-user@TARGET_SERVER_IP"
-        APP_DIR = "/opt/food-ordering"
+        TARGET_IP = '34.236.150.119'
+        CRED_ID   = 'ec2-target-key'
     }
 
+    agent any
+
     stages {
+
         stage('Checkout') {
             steps {
                 git branch: 'main',
-                    url: 'https://github.com/YOUR_USERNAME/food-ordering-flask.git'
+                    url: 'https://github.com/Rajpardeshi205/python-app.git'
+            }
+        }
+
+        stage('Install Python') {
+            steps {
+                sh '''
+                    sudo yum update -y
+                    sudo yum install -y python3
+                '''
+            }
+        }
+
+        stage('Copy Application') {
+            steps {
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: "${CRED_ID}",
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USER'
+                )]) {
+                    sh '''
+                        scp -i $SSH_KEY \
+                        -o StrictHostKeyChecking=no \
+                        -r . \
+                        $SSH_USER@$TARGET_IP:/home/ec2-user/python-app
+                    '''
+                }
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: "${CRED_ID}",
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USER'
+                )]) {
+                    sh '''
+                        ssh -i $SSH_KEY \
+                        -o StrictHostKeyChecking=no \
+                        $SSH_USER@$TARGET_IP "
+                            cd /home/ec2-user/python-app &&
+                            python3 -m venv .venv &&
+                            .venv/bin/python -m pip install --upgrade pip &&
+                            .venv/bin/python -m pip install -r requirements.txt
+                        "
+                    '''
+                }
             }
         }
 
         stage('Test') {
             steps {
-                sh '''
-                    python3 -m venv .venv
-                    . .venv/bin/activate
-                    pip install -r requirements.txt
-                    pytest -q
-                '''
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: "${CRED_ID}",
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USER'
+                )]) {
+                    sh '''
+                        ssh -i $SSH_KEY \
+                        -o StrictHostKeyChecking=no \
+                        $SSH_USER@$TARGET_IP "
+                            cd /home/ec2-user/python-app &&
+                            .venv/bin/python -m unittest discover -s tests
+                        "
+                    '''
+                }
             }
         }
 
-        stage('Deploy to Target Server') {
+        stage('Deploy') {
             steps {
-                sh '''
-                    ssh -o StrictHostKeyChecking=no ${TARGET} "sudo mkdir -p ${APP_DIR} && sudo chown -R ec2-user:ec2-user ${APP_DIR}"
-                    scp -o StrictHostKeyChecking=no -r app.py requirements.txt templates static ${TARGET}:${APP_DIR}/
-                    ssh -o StrictHostKeyChecking=no ${TARGET} "
-                        cd ${APP_DIR} &&
-                        python3 -m venv venv &&
-                        source venv/bin/activate &&
-                        pip install -r requirements.txt &&
-                        sudo pkill -f 'gunicorn.*app:app' || true &&
-                        nohup venv/bin/gunicorn --bind 0.0.0.0:5000 app:app > app.log 2>&1 &
-                    "
-                '''
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: "${CRED_ID}",
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USER'
+                )]) {
+                    sh '''
+                        ssh -i $SSH_KEY -o StrictHostKeyChecking=no \
+                        $SSH_USER@$TARGET_IP '
+                            cd /home/$USER/python-app
+                            fuser -k 5000/tcp >/dev/null 2>&1 || true
+                            setsid nohup .venv/bin/python app.py > app.log 2>&1 < /dev/null &
+                            sleep 3
+                            curl -fsS http://localhost:5000/ >/dev/null && echo "App is up"
+                        '
+                    '''
+                }
             }
-        }
-    }
-
-    post {
-        success {
-            echo 'FoodExpress deployed successfully to Target Server!'
-        }
-        failure {
-            echo 'Deployment failed. Check Jenkins console output.'
         }
     }
 }
