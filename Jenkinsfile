@@ -1,7 +1,7 @@
 pipeline {
 
     environment {
-        TARGET_IP = '34.236.150.119'
+        TARGET_IP = '54.219.220.165'
         CRED_ID   = 'ec2-target-key'
     }
 
